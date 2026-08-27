@@ -234,7 +234,7 @@ pnpm tauri dev
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
 | ~~🟢 高~~ | ~~首次 `pnpm tauri dev` 跑通~~ | ✅ 2026-08-27 已完成，修了 url regex bug |
-| 🟢 高 | `pnpm tauri build` 产出 msi/nsis | 验证打包链 |
+| ~~🟢 高~~ | ~~`pnpm tauri build` 产出 msi/nsis~~ | ✅ 2026-08-27 首次 `pnpm tauri build` 成功（~3 分钟）。产物：<br>• `src-tauri\target\release\dsh-desktop-lite.exe` (10.6 MB, 裸 release exe)<br>• `bundle\msi\DSH Desktop Lite_0.1.0_x64_en-US.msi` (3.5 MB, MSI magic 头 `D0CF11E0A1B11AE1` 验证为真)<br>• `bundle\nsis\DSH Desktop Lite_0.1.0_x64-setup.exe` (2.3 MB, NSIS 安装器)<br>Tauri 自动下载并缓存了 WiX 3.14.1 + NSIS 3.11 + nsis-tauri-utils 0.5.3。**未实际运行安装器**（避免污染系统注册表）— 验证仅到文件存在 + magic bytes 正确。 |
 | 🟡 中 | 窗口状态记忆（`tauri-plugin-window-state`） | 关闭后下次记住大小位置 |
 | 🟡 中 | 系统托盘 | 关闭窗口 ≠ 退出进程，可从托盘恢复 |
 | ~~🟡 中~~ | ~~单实例锁（`tauri-plugin-single-instance`）~~ | ✅ 2026-08-27 已实现并真机验证：起第二个 cargo run 后 3 秒内只剩第一个进程（PID 52728），第二个被 mutex 杀 |
