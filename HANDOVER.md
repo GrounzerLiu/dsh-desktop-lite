@@ -241,6 +241,7 @@ pnpm tauri dev
 | ~~🟡 中~~ | ~~系统托盘（关闭 = 隐藏）~~ | ✅ 2026-08-27 已实现：tray-icon 核心 + CheckMenuItem + settings.json 持久化。 真机验证：勾选 `minimize_to_tray` 后 WM_CLOSE 触发 prevent_close + hide，进程不退出；取消勾选后 WM_CLOSE 正常退出 |
 | ~~🟡 中~~ | ~~窗口状态记忆（`tauri-plugin-window-state`）~~ | ✅ 2026-08-27 已实现并真机验证：第二次 dev 启动位置 `(589,119) 1000x600` ≠ tauri.conf.json 中心默认值，确认从 `%APPDATA%\com.deepseek.dsh-desktop-lite\.window-state.json` 恢复 |
 | ~~🟡 中~~ | ~~自定义图标~~ | ✅ 2026-08-27 已用 DSH 鲸鱼 logo 替换。源 SVG `src-tauri/icon-source/dsh-logo.svg`（取自 DSH 安装包 favicon），用 `pnpm tauri icon <svg>` 生成全套 19 个图标（Windows/Linux/macOS/Android/iOS）。`tauri.conf.json` `bundle.icon` 数组加入 `64x64.png` 和 `icon.png` 覆盖 Tauri 2 bundle 默认 |
+| ~~🟢 中~~ | ~~托盘加"重启 DSH"~~ | ✅ 2026-08-27 已实现：托盘菜单第 3 项 `重启 DSH`，点击后 Rust 端 `dsh::restart` kill 旧 dsh + 跳回 boot page + 让新 main.ts 走正常 start_dsh。子代理 review 发现并修复 3 个 bug：stale dsh-ready race（wait 线程可能在 url 还没清空时 emit 死 URL）、stale dsh-error（重启中显示"dsh 已退出"）、prod boot URL bug（重启时 window.url 是 dsh 端口不是 tauri origin）。修复方案：`DshHandle.shutting_down` AtomicBool 协作式取消 wait 线程；`BOOT_URL` OnceCell 在 setup 早期缓存。 |
 | 🟡 中 | 日志持久化 | dsh 子进程日志写到 `%APPDATA%\dsh-desktop-lite\logs\` |
 | ~~🟢 中~~ | ~~启动失败时显示 dsh 真实错误~~ | ✅ 2026-08-27 已实现：结构化 `DshError { message, last_stderr }`，错误页底部贴最近 30 行 stderr；wait 线程同时检测 dsh 提前退出 |
 | ~~🟡 中~~ | ~~验证关闭 Tauri 窗口时 dsh 子进程被 `RunEvent::WindowEvent::CloseRequested` 钩子 kill~~ | ✅ 2026-08-27 已用 Win32 PostMessage WM_CLOSE 真机验证：dsh 子进程（监听 57376 的 node + dsh.cmd shim）被 kill，端口不再监听 |

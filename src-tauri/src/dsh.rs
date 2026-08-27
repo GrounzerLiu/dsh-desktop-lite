@@ -13,9 +13,10 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// The "URL is ready" payload published to the frontend.
 #[derive(Debug, Serialize, Clone)]
@@ -60,6 +61,11 @@ struct DshHandle {
     /// Ring buffer of the most recent stderr lines, used to enrich the
     /// `dsh-error` event so the user sees what dsh said before it died.
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    /// Set by `restart()` before killing the old dsh, so the old wait
+    /// thread knows to stop emitting events for a process it is about to
+    /// be killed. Reset back to false by `spawn_and_wait_for_url` so a
+    /// fresh wait thread can do its job for the new dsh.
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl DshHandle {
@@ -68,6 +74,7 @@ impl DshHandle {
             child: Arc::new(Mutex::new(None)),
             url: Arc::new(Mutex::new(None)),
             stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP))),
+            shutting_down: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -140,6 +147,10 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
     {
         let h = handle();
         *h.child.lock().unwrap() = Some(child);
+        // If we're called during/after a restart, clear the shutdown
+        // flag so the new wait thread is free to emit dsh-ready for the
+        // new dsh.
+        h.shutting_down.store(false, Ordering::Relaxed);
     }
 
     // Stream stdout/stderr on background threads; the stdout thread reports
@@ -153,12 +164,27 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
     // forward it to the frontend as a single "dsh-ready" event. If the
     // child exits or the 60s deadline elapses first, surface a structured
     // `dsh-error` with the trailing stderr.
+    //
+    // The loop is cooperatively cancelled by `restart()` setting the
+    // `shutting_down` flag before killing the old dsh — we then stop
+    // emitting events so the *old* frontend page (which is about to be
+    // replaced anyway) doesn't navigate to a dead URL or flash an error.
     let app_for_wait = app.clone();
     let url_arc = handle().url.clone();
+    let shutting_down_arc = handle().shutting_down.clone();
     thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
+            // Cooperatively stop if restart() is mid-flight.
+            if shutting_down_arc.load(Ordering::Relaxed) {
+                return;
+            }
             if let Some(url) = url_arc.lock().unwrap().clone() {
+                // Re-check after taking the lock — restart() may have
+                // flipped shutting_down while we were waiting for it.
+                if shutting_down_arc.load(Ordering::Relaxed) {
+                    return;
+                }
                 let _ = app_for_wait.emit("dsh-ready", DshReady { url });
                 return;
             }
@@ -173,6 +199,9 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 }
             };
             if exited {
+                if shutting_down_arc.load(Ordering::Relaxed) {
+                    return;
+                }
                 emit_dsh_error(
                     &app_for_wait,
                     "dsh 进程已退出，未打印启动 URL。",
@@ -180,6 +209,9 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 return;
             }
             if std::time::Instant::now() >= deadline {
+                if shutting_down_arc.load(Ordering::Relaxed) {
+                    return;
+                }
                 emit_dsh_error(
                     &app_for_wait,
                     "等待 dsh 启动超时 (60s)。请检查依赖或查看日志。",
@@ -271,6 +303,46 @@ pub fn shutdown() {
             let _ = child.wait();
         }
     }
+}
+
+/// Kill the running dsh child (if any) and point the WebView back at the
+/// app's own boot page. The fresh `index.html` + `main.ts` will run the
+/// usual boot flow (`check_deps` → `start_dsh`) and spawn a new dsh. The
+/// `dsh-ready` event from the new spawn is picked up by the boot-time
+/// listener and navigates the WebView to the fresh URL.
+///
+/// This is what the tray menu's "Restart DSH" entry calls. It deliberately
+/// does NOT spawn dsh itself — if it did, the boot page's own start_dsh
+/// would race it and we would end up with two dsh instances on different
+/// ports.
+pub fn restart(app: &AppHandle) -> Result<(), String> {
+    // Order matters: flip `shutting_down` and clear the remembered URL
+    // *before* killing the old child. The wait thread for the old dsh
+    // polls every 100ms; if it observes the stale URL after the kill
+    // but before we clear it, it would emit `dsh-ready` for a dead
+    // process and the (about-to-be-replaced) frontend would navigate
+    // to a dead origin. The shutting_down flag is a second line of
+    // defence: even if clearing races the wait thread, the flag tells
+    // the wait thread to drop its events.
+    if let Some(h) = HANDLE.get() {
+        h.shutting_down.store(true, Ordering::Relaxed);
+        h.url.lock().unwrap().take();
+        h.stderr_tail.lock().unwrap().clear();
+    }
+    shutdown();
+    // Resolve the boot URL via the lib.rs-cached `BOOT_URL` rather than
+    // inspecting the current WebView URL — by the time we're called the
+    // WebView is on a dsh URL, and using that would navigate us back
+    // to the dead dsh origin (see review C.1).
+    let boot_url = crate::BOOT_URL
+        .get()
+        .ok_or_else(|| "boot URL not initialized yet".to_string())?;
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .navigate(boot_url.parse().map_err(|e| format!("bad boot url: {e}"))?)
+            .map_err(|e| format!("navigate to boot page failed: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Lightweight status snapshot for the frontend.

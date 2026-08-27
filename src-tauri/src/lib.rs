@@ -12,11 +12,18 @@ pub mod deps;
 pub mod dsh;
 pub mod settings;
 
+use once_cell::sync::OnceCell;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
+
+/// Cached URL of the app's own boot page (Vite dev URL in dev mode, or
+/// the tauri:// origin in a bundled build). Captured once at setup so
+/// that a later `restart()` always navigates back to the real boot page
+/// — even if the WebView is currently on a dsh URL.
+pub(crate) static BOOT_URL: OnceCell<String> = OnceCell::new();
 
 /// Returned to the frontend before it navigates; tells it which DSH state
 /// to render (loading page, error page, etc.).
@@ -36,6 +43,7 @@ static MINIMIZE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 const MINIMIZE_TO_TRAY_ID: &str = "minimize_to_tray";
 const SHOW_ID: &str = "show";
 const HIDE_ID: &str = "hide";
+const RESTART_ID: &str = "restart";
 const QUIT_ID: &str = "quit";
 
 /// Dependency check: where are node and dsh?
@@ -68,6 +76,15 @@ fn start_dsh(app: tauri::AppHandle) -> Result<String, String> {
         .dsh
         .ok_or_else(|| "未找到 dsh 命令".to_string())?;
     dsh::spawn_and_wait_for_url(&app, &dsh_path)
+}
+
+/// Kill the running dsh and navigate the WebView back to the boot page,
+/// which will re-run the normal boot flow and spawn a fresh dsh. Used by
+/// the tray menu's "Restart DSH" entry, and callable from the frontend
+/// as a recovery action when dsh becomes unresponsive.
+#[tauri::command]
+fn restart_dsh(app: tauri::AppHandle) -> Result<(), String> {
+    dsh::restart(&app)
 }
 
 /// Live status snapshot for diagnostics / future "stop" button.
@@ -135,9 +152,34 @@ pub fn run() {
                 .unwrap_or_else(|_| settings::Settings::default());
             MINIMIZE_TO_TRAY.store(loaded.minimize_to_tray, Ordering::Relaxed);
 
+            // Cache the boot page URL once, at the very start of setup,
+            // BEFORE the WebView has had a chance to navigate to a dsh
+            // URL. `restart()` later reads this so it can navigate the
+            // WebView back here regardless of where it currently points.
+            // We prefer config.build.dev_url (Vite in dev), and fall
+            // back to the main window's initial URL (which in a bundled
+            // build is tauri://localhost/ pointing at index.html).
+            let boot_url = {
+                let build = &app.config().build;
+                if let Some(url) = &build.dev_url {
+                    url.to_string()
+                } else if let Some(window) = app.get_webview_window("main") {
+                    if let Ok(u) = window.url() {
+                        u.to_string()
+                    } else {
+                        return Err("无法获取主窗口初始 URL".into());
+                    }
+                } else {
+                    return Err("主窗口不存在".into());
+                }
+            };
+            let _ = BOOT_URL.set(boot_url);
+
             // ---- Tray icon + menu ----
             let show_item = MenuItem::with_id(app, SHOW_ID, "显示窗口", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, HIDE_ID, "隐藏窗口", true, None::<&str>)?;
+            let restart_item =
+                MenuItem::with_id(app, RESTART_ID, "重启 DSH", true, None::<&str>)?;
             let min_tray_item = CheckMenuItem::with_id(
                 app,
                 MINIMIZE_TO_TRAY_ID,
@@ -149,7 +191,13 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, QUIT_ID, "退出", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show_item, &hide_item, &min_tray_item, &quit_item],
+                &[
+                    &show_item,
+                    &hide_item,
+                    &restart_item,
+                    &min_tray_item,
+                    &quit_item,
+                ],
             )?;
 
             let _tray = TrayIconBuilder::with_id("main-tray")
@@ -181,6 +229,16 @@ pub fn run() {
                                 minimize_to_tray: new_state,
                             },
                         );
+                    }
+                    RESTART_ID => {
+                        // Kill the running dsh and navigate the WebView
+                        // back to the boot page. The boot page's normal
+                        // start_dsh will spawn a fresh dsh; its
+                        // dsh-ready event will then navigate us to the
+                        // new URL. If dsh is not running (e.g. cold
+                        // start + immediate restart), this still works
+                        // because the boot page will spawn one.
+                        let _ = dsh::restart(app);
                     }
                     QUIT_ID => {
                         app.exit(0);
@@ -242,6 +300,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_deps,
             start_dsh,
+            restart_dsh,
             dsh_status,
             navigate_to,
             get_minimize_to_tray,
