@@ -117,6 +117,21 @@ async function main() {
     }),
   );
 
+  unlistens.push(
+    await listen<void>("dsh-restarting", () => {
+      // The Rust side is about to kill the running dsh and bring up a
+      // new one. The webview is currently sitting on the dead dsh's UI;
+      // show our own loading screen immediately so the user isn't staring
+      // at a frozen page for ~5s while the new dsh boots. The dsh-ready
+      // listener installed above will fire and navigate us to the new URL
+      // once it's available.
+      errorEl.classList.add("hidden");
+      loadingEl.classList.remove("hidden");
+      logEl.textContent = "";
+      appendLog("⟳ 正在重启 DSH...");
+    }),
+  );
+
   // 3. Start dsh. The actual URL arrives via the `dsh-ready` event.
   try {
     const ack = await invoke<string>("start_dsh");

@@ -16,7 +16,7 @@ use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 /// The "URL is ready" payload published to the frontend.
 #[derive(Debug, Serialize, Clone)]
@@ -445,18 +445,30 @@ pub fn restart(app: &AppHandle) -> Result<(), String> {
         h.url.lock().unwrap().take();
         h.stderr_tail.lock().unwrap().clear();
     }
+
+    // Tell the frontend to show a "restarting" overlay. Without this
+    // the user would stare at the dead DSH page for ~5s while the
+    // new dsh boots.
+    let _ = app.emit("dsh-restarting", ());
+
     shutdown();
-    // Resolve the boot URL via the lib.rs-cached `BOOT_URL` rather than
-    // inspecting the current WebView URL — by the time we're called the
-    // WebView is on a dsh URL, and using that would navigate us back
-    // to the dead dsh origin (see review C.1).
-    let boot_url = crate::BOOT_URL
-        .get()
-        .ok_or_else(|| "boot URL not initialized yet".to_string())?;
-    if let Some(window) = app.get_webview_window("main") {
-        window
-            .navigate(boot_url.parse().map_err(|e| format!("bad boot url: {e}"))?)
-            .map_err(|e| format!("navigate to boot page failed: {e}"))?;
+
+    // Re-spawn a fresh dsh here, instead of relying on the WebView
+    // navigating to the boot page and main.ts calling start_dsh again.
+    // The latter is fragile: in dev mode the boot page is the Vite
+    // dev server (http://localhost:1420/) and if Vite has died,
+    // the navigate fails with ERR_CONNECTION_REFUSED and no reload
+    // happens — dsh never restarts. In production it relies on the
+    // user-installed app's bundled assets, but the same race is
+    // possible. Spawning here means the new dsh is up before we
+    // touch the WebView at all.
+    let status = crate::deps::check_all();
+    let dsh_path = status
+        .dsh
+        .ok_or_else(|| "未找到 dsh 命令".to_string())?;
+    if let Err(e) = spawn_and_wait_for_url(app, &dsh_path) {
+        eprintln!("[dsh::restart] failed to spawn new dsh: {e}");
+        return Err(e);
     }
     Ok(())
 }
