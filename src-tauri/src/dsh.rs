@@ -105,6 +105,52 @@ pub(crate) fn extract_url(line: &str) -> Option<String> {
     caps.get(1).map(|m| m.as_str().to_string())
 }
 
+/// How to invoke the dsh CLI: either by its real binary path, or by
+/// going through `node bin.js` (which is what `dsh.cmd` does on
+/// Windows). We split these cases so the spawn site can build the
+/// right `Command` for each.
+enum DshProgram {
+    /// dsh_path is a real binary (or a shim Command::new can handle
+    /// directly). We pass it as the program.
+    Direct(String),
+    /// dsh_path is a Windows .cmd / .bat shim that internally runs
+    /// `node <bin.js>`. We bypass the shim by invoking node with
+    /// bin.js as the first argument; this lets our CREATE_NO_WINDOW
+    /// flag actually take effect.
+    NodeShim { node: String, bin_js: String },
+}
+
+/// Resolve how to invoke dsh given the path returned by `deps::find_dsh`.
+/// On Windows, detect the .cmd shim and pick out the underlying
+/// node + bin.js. On other platforms, just return Direct.
+fn resolve_dsh_program(dsh_path: &str) -> Result<DshProgram, String> {
+    let p = std::path::Path::new(dsh_path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
+        // The dsh.cmd shim is alongside `node_modules\@deepseek-ai\dsh\lib\bin.js`.
+        let parent = p
+            .parent()
+            .ok_or_else(|| format!("dsh path has no parent: {dsh_path}"))?;
+        let bin_js = parent.join("node_modules\\@deepseek-ai\\dsh\\lib\\bin.js");
+        if !bin_js.is_file() {
+            return Err(format!(
+                "dsh bin.js not found at {}; dsh install may be incomplete",
+                bin_js.display()
+            ));
+        }
+        let node = which::which("node").map_err(|e| format!("node not on PATH: {e}"))?;
+        // which can return a relative path; canonicalize so Command::new
+        // doesn't re-search PATH and accidentally re-pick dsh.cmd.
+        let node = node.canonicalize().unwrap_or(node);
+        Ok(DshProgram::NodeShim {
+            node: node.to_string_lossy().into_owned(),
+            bin_js: bin_js.to_string_lossy().into_owned(),
+        })
+    } else {
+        Ok(DshProgram::Direct(dsh_path.to_string()))
+    }
+}
+
 /// Spawn the dsh web child process. Returns the chosen URL once the boot
 /// line is observed, otherwise an error.
 ///
@@ -113,18 +159,59 @@ pub(crate) fn extract_url(line: &str) -> Option<String> {
 /// `--port 0` lets the OS pick a free port, sidestepping the 3080 default
 /// which may already be in use.
 pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String, String> {
-    let mut cmd = Command::new(dsh_path);
-    cmd.arg("web")
-        .arg("--no-open")
-        .arg("--port")
-        .arg("0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // `dsh_path` may point at `dsh.cmd` (the npm-generated Windows
+    // batch shim). Spawning that directly with Command::new makes
+    // Windows CreateProcess launch a *parent* `cmd.exe /c "dsh.cmd"`
+    // that does NOT honour any CREATE_NO_WINDOW we set — the user
+    // sees a brief blank terminal window. The dsh.cmd shim itself
+    // is just `node "%dp0%\node_modules\@deepseek-ai\dsh\lib\bin.js" %*`,
+    // so we bypass the shim by deriving (node, bin.js) and passing
+    // them as separate argv elements. This way our CREATE_NO_WINDOW
+    // actually applies.
+    //
+    // On non-Windows, or if dsh_path is already a real binary, we
+    // invoke it as-is.
+    let mut cmd = match resolve_dsh_program(dsh_path)? {
+        DshProgram::Direct(path) => {
+            let mut c = Command::new(&path);
+            c.arg("web")
+                .arg("--no-open")
+                .arg("--port")
+                .arg("0")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            c
+        }
+        DshProgram::NodeShim { node, bin_js } => {
+            let mut c = Command::new(&node);
+            c.arg(&bin_js)
+                .arg("web")
+                .arg("--no-open")
+                .arg("--port")
+                .arg("0")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            c
+        }
+    };
+
+    // CREATE_NO_WINDOW (Windows-only): suppresses the brief blank
+    // console window for any further .cmd shims invoked by dsh's own
+    // subprocesses (cordis plugins like tavily-mcp, chrome-devtools-mcp,
+    // etc.). dsh-desktop-lite is a GUI-subsystem process with no parent
+    // console, so without this those cmd invocations would each
+    // briefly allocate a conhost window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     // Inherit the user's working directory so DSH sees their $DSH_HOME, env,
-    // and the project they were last in. On Windows a `dsh.cmd` shim is a
-    // batch script — Command::new already handles the .cmd resolution.
+    // and the project they were last in.
     if let Ok(cwd) = std::env::current_dir() {
         cmd.current_dir(cwd);
     }
