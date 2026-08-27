@@ -1,0 +1,3 @@
+# Force LF line endings for source files so that Windows checkouts don't
+# introduce CRLF-only diffs against the canonical LF in the repo.
+*        text=auto eol=lf

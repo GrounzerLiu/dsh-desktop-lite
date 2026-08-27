@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH Desktop Lite</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main id="screen">
+      <section id="loading" class="screen">
+        <div class="brand">
+          <h1>DSH Desktop Lite</h1>
+          <p class="subtitle">正在启动 DSH 服务...</p>
+        </div>
+        <div class="spinner" aria-hidden="true"></div>
+        <pre id="log" class="log" aria-live="polite"></pre>
+      </section>
+
+      <section id="error" class="screen hidden">
+        <h1>启动失败</h1>
+        <p id="error-message" class="error-message"></p>
+        <div class="hints">
+          <h2>检查清单</h2>
+          <ul>
+            <li>Node.js ≥ 18：<a href="https://nodejs.org" target="_blank">nodejs.org</a></li>
+            <li>DSH CLI：<code>npm i -g @deepseek-ai/dsh</code></li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
