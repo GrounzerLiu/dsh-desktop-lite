@@ -72,6 +72,7 @@ D:\any\dsh-desktop-lite\
    - ✅ **2026-08-27 接手者已重跑并修了一个 regex bug**（见 §5.3 第 5 条），Tauri 窗口内 DSH Web 正常显示
 2. **没有 release 打包** —— `pnpm tauri build` 还没跑过。
 3. **没有图标定制** —— 用的是模板默认图标。
+4. ~~**启动失败时只显示泛化 "DSH 启动失败"**~~ —— ✅ 2026-08-27 已改为结构化 `DshError { message, last_stderr }`，前端在错误页底部展示 dsh 子进程最近 30 行 stderr；wait 线程还会检测 dsh 提前退出并 emit 错误（见 §5.1 数据流注释）
 
 ---
 
@@ -239,8 +240,8 @@ pnpm tauri dev
 | 🟡 中 | 单实例锁（`tauri-plugin-single-instance`） | 避免重复启动 dsh |
 | 🟡 中 | 自定义图标 | 替换 `src-tauri/icons/`，用 Tauri 推荐的 icns/ico |
 | 🟡 中 | 日志持久化 | dsh 子进程日志写到 `%APPDATA%\dsh-desktop-lite\logs\` |
-| 🟢 中 | 启动失败时显示 dsh 真实错误 | 现在只是泛化 "DSH 启动失败"，可以贴最后 N 行 stderr |
-| 🟡 中 | 验证关闭 Tauri 窗口时 dsh 子进程被 `RunEvent::WindowEvent::CloseRequested` 钩子 kill | 代码上有但本次没单测，pid 65489 那一批 dsh 进程在 kill dev 后被清空是 OS reap 还是显式 kill 待确认 |
+| ~~🟢 中~~ | ~~启动失败时显示 dsh 真实错误~~ | ✅ 2026-08-27 已实现：结构化 `DshError { message, last_stderr }`，错误页底部贴最近 30 行 stderr；wait 线程同时检测 dsh 提前退出 |
+| ~~🟡 中~~ | ~~验证关闭 Tauri 窗口时 dsh 子进程被 `RunEvent::WindowEvent::CloseRequested` 钩子 kill~~ | ✅ 2026-08-27 已用 Win32 PostMessage WM_CLOSE 真机验证：dsh 子进程（监听 57376 的 node + dsh.cmd shim）被 kill，端口不再监听 |
 | 🟡 中 | macOS / Linux 兼容性验证 | 项目是为 Windows 设计但 Tauri 跨平台，测试一下 |
 | 🟢 低 | Release 自动更新（`tauri-plugin-updater`） | 接 GitHub Releases |
 | 🟢 低 | 「Lite vs Full」方案二：sidecar 打包 Node.js + dsh | 真的零依赖安装，但包大 |

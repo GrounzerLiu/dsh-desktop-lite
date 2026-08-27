@@ -25,9 +25,18 @@ interface DshLog {
   line: string;
 }
 
+interface DshError {
+  message: string;
+  last_stderr: string[];
+}
+
 const loadingEl = document.getElementById("loading") as HTMLElement;
 const errorEl = document.getElementById("error") as HTMLElement;
 const errorMsgEl = document.getElementById("error-message") as HTMLElement;
+const errorStderrEl = document.getElementById("error-stderr") as HTMLPreElement;
+const errorStderrHeadingEl = document.getElementById(
+  "error-stderr-heading",
+) as HTMLElement;
 const logEl = document.getElementById("log") as HTMLPreElement;
 
 const MAX_LOG_LINES = 80;
@@ -41,8 +50,17 @@ function appendLog(text: string) {
   logEl.scrollTop = 0;
 }
 
-function showError(message: string) {
+function showError(message: string, lastStderr: string[] = []) {
   errorMsgEl.textContent = message;
+  if (lastStderr.length > 0) {
+    errorStderrEl.textContent = lastStderr.join("\n");
+    errorStderrEl.classList.remove("hidden");
+    errorStderrHeadingEl.classList.remove("hidden");
+  } else {
+    errorStderrEl.textContent = "";
+    errorStderrEl.classList.add("hidden");
+    errorStderrHeadingEl.classList.add("hidden");
+  }
   loadingEl.classList.add("hidden");
   errorEl.classList.remove("hidden");
 }
@@ -93,8 +111,9 @@ async function main() {
   );
 
   unlistens.push(
-    await listen<string>("dsh-error", (event) => {
-      showError(`DSH 启动失败：${event.payload}`);
+    await listen<DshError>("dsh-error", (event) => {
+      const { message, last_stderr } = event.payload;
+      showError(`DSH 启动失败：${message}`, last_stderr);
     }),
   );
 

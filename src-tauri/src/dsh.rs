@@ -9,6 +9,7 @@
 use once_cell::sync::OnceCell;
 use regex::Regex;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -29,6 +30,15 @@ pub struct DshLog {
     pub line: String,
 }
 
+/// Failure payload. The frontend renders `message` prominently and
+/// tacks `last_stderr` underneath so the user can see what dsh itself
+/// said before giving up.
+#[derive(Debug, Serialize, Clone)]
+pub struct DshError {
+    pub message: String,
+    pub last_stderr: Vec<String>,
+}
+
 /// Process status snapshot.
 #[derive(Debug, Serialize, Clone)]
 pub struct DshStatus {
@@ -37,12 +47,19 @@ pub struct DshStatus {
     pub url: Option<String>,
 }
 
+/// How many trailing stderr lines we keep for the error report. Bounded so
+/// the payload stays small and the VecDeque doesn't grow forever.
+const STDERR_TAIL_CAP: usize = 30;
+
 /// Global child-process handle. `OnceCell` gives us a one-shot slot for the
 /// single dsh process this app supervises; the inner `Mutex` lets us
 /// interrogate the child (or kill it) from the Tauri command thread.
 struct DshHandle {
     child: Arc<Mutex<Option<Child>>>,
     url: Arc<Mutex<Option<String>>>,
+    /// Ring buffer of the most recent stderr lines, used to enrich the
+    /// `dsh-error` event so the user sees what dsh said before it died.
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl DshHandle {
@@ -50,6 +67,7 @@ impl DshHandle {
         Self {
             child: Arc::new(Mutex::new(None)),
             url: Arc::new(Mutex::new(None)),
+            stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP))),
         }
     }
 }
@@ -71,6 +89,13 @@ fn url_regex() -> &'static Regex {
         Regex::new(r"dsh web:\s+(https?://\S+)")
             .expect("valid url regex")
     })
+}
+
+/// Pull the bare URL out of a DSH boot-banner line, or `None` if the line
+/// isn't the banner. Exposed (crate-private) for unit tests.
+pub(crate) fn extract_url(line: &str) -> Option<String> {
+    let caps = url_regex().captures(line)?;
+    caps.get(1).map(|m| m.as_str().to_string())
 }
 
 /// Spawn the dsh web child process. Returns the chosen URL once the boot
@@ -118,12 +143,16 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
     }
 
     // Stream stdout/stderr on background threads; the stdout thread reports
-    // the resolved URL back as soon as the boot banner appears.
+    // the resolved URL back as soon as the boot banner appears. The stderr
+    // thread also keeps a rolling tail so we can attach the last N lines
+    // to any `dsh-error` event.
     spawn_stdout_relay(app.clone(), stdout);
     spawn_stderr_relay(app.clone(), stderr);
 
     // Wait (on a background thread) for the URL to be published, then
-    // forward it to the frontend as a single "dsh-ready" event.
+    // forward it to the frontend as a single "dsh-ready" event. If the
+    // child exits or the 60s deadline elapses first, surface a structured
+    // `dsh-error` with the trailing stderr.
     let app_for_wait = app.clone();
     let url_arc = handle().url.clone();
     thread::spawn(move || {
@@ -133,9 +162,26 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 let _ = app_for_wait.emit("dsh-ready", DshReady { url });
                 return;
             }
+            // Check if the child has already exited without ever printing
+            // the boot banner. `try_wait` reuses the same `Child` handle
+            // we stashed in HANDLE.
+            let exited = {
+                let mut guard = handle().child.lock().unwrap();
+                match guard.as_mut() {
+                    Some(child) => matches!(child.try_wait(), Ok(Some(_))),
+                    None => true, // someone (shutdown) already reaped it
+                }
+            };
+            if exited {
+                emit_dsh_error(
+                    &app_for_wait,
+                    "dsh 进程已退出，未打印启动 URL。",
+                );
+                return;
+            }
             if std::time::Instant::now() >= deadline {
-                let _ = app_for_wait.emit(
-                    "dsh-error",
+                emit_dsh_error(
+                    &app_for_wait,
                     "等待 dsh 启动超时 (60s)。请检查依赖或查看日志。",
                 );
                 return;
@@ -146,6 +192,25 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
 
     // Return the pid immediately; the actual URL arrives via the event.
     Ok(format!("dsh started (pid {})", pid))
+}
+
+/// Snapshot the trailing stderr lines and emit a `dsh-error` event so the
+/// frontend can show the user what dsh said before giving up.
+fn emit_dsh_error(app: &AppHandle, message: &str) {
+    let last_stderr: Vec<String> = handle()
+        .stderr_tail
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect();
+    let _ = app.emit(
+        "dsh-error",
+        DshError {
+            message: message.to_string(),
+            last_stderr,
+        },
+    );
 }
 
 fn spawn_stdout_relay(app: AppHandle, stdout: ChildStdout) {
@@ -162,21 +227,29 @@ fn spawn_stdout_relay(app: AppHandle, stdout: ChildStdout) {
                     line: line.clone(),
                 },
             );
-            if let Some(m) = url_regex().captures(&line) {
-                if let Some(url) = m.get(1) {
-                    *url_arc.lock().unwrap() = Some(url.as_str().to_string());
-                    // do not break — keep draining the pipe so the child does
-                    // not block on a full stdout buffer.
-                }
+            if let Some(url) = extract_url(&line) {
+                *url_arc.lock().unwrap() = Some(url);
+                // do not break — keep draining the pipe so the child does
+                // not block on a full stdout buffer.
             }
         }
     });
 }
 
 fn spawn_stderr_relay(app: AppHandle, stderr: ChildStderr) {
+    let tail_arc = handle().stderr_tail.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
+            // Push onto the rolling tail (newest at the back) for later
+            // use by emit_dsh_error.
+            {
+                let mut tail = tail_arc.lock().unwrap();
+                if tail.len() == STDERR_TAIL_CAP {
+                    tail.pop_front();
+                }
+                tail.push_back(line.clone());
+            }
             let _ = app.emit(
                 "dsh-log",
                 DshLog {
@@ -229,4 +302,73 @@ pub fn status() -> DshStatus {
 #[allow(dead_code)]
 pub fn placeholder() -> PathBuf {
     PathBuf::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_url;
+
+    #[test]
+    fn extracts_bare_url_from_canonical_banner() {
+        assert_eq!(
+            extract_url("dsh web: http://127.0.0.1:63399").as_deref(),
+            Some("http://127.0.0.1:63399"),
+        );
+    }
+
+    #[test]
+    fn extracts_bare_url_with_log_prefix() {
+        // Some DSH builds wrap the banner in a logger frame, e.g. [dsh].
+        assert_eq!(
+            extract_url("[dsh] dsh web: http://127.0.0.1:3099").as_deref(),
+            Some("http://127.0.0.1:3099"),
+        );
+    }
+
+    #[test]
+    fn extracts_https_url() {
+        assert_eq!(
+            extract_url("dsh web: https://localhost:3080").as_deref(),
+            Some("https://localhost:3080"),
+        );
+    }
+
+    #[test]
+    fn preserves_path_and_query() {
+        assert_eq!(
+            extract_url("dsh web: http://127.0.0.1:3099/foo?x=1").as_deref(),
+            Some("http://127.0.0.1:3099/foo?x=1"),
+        );
+    }
+
+    #[test]
+    fn does_not_swallow_extra_trailing_token() {
+        // Without a trailing word boundary the \S+ group should still
+        // stop at whitespace, so a trailing token on the same line stays
+        // out of the URL.
+        assert_eq!(
+            extract_url("dsh web: http://127.0.0.1:54501 ready").as_deref(),
+            Some("http://127.0.0.1:54501"),
+        );
+    }
+
+    #[test]
+    fn ignores_lines_without_dsh_banner() {
+        // A URL that isn't preceded by "dsh web:" must not be picked up,
+        // otherwise we could navigate to an unrelated host that just
+        // happened to appear in some dsh log line.
+        assert_eq!(extract_url("random http://not-from-dsh.example/ line"), None);
+        assert_eq!(extract_url(""), None);
+        assert_eq!(
+            extract_url("listening on http://127.0.0.1:9999"),
+            None,
+        );
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        // We never want to feed file://, ws://, etc. into navigate.
+        assert_eq!(extract_url("dsh web: file:///etc/passwd"), None);
+        assert_eq!(extract_url("dsh web: ws://127.0.0.1:63399"), None);
+    }
 }
