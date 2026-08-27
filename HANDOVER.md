@@ -240,7 +240,7 @@ pnpm tauri dev
 | ~~🟡 中~~ | ~~单实例锁（`tauri-plugin-single-instance`）~~ | ✅ 2026-08-27 已实现并真机验证：起第二个 cargo run 后 3 秒内只剩第一个进程（PID 52728），第二个被 mutex 杀 |
 | ~~🟡 中~~ | ~~系统托盘（关闭 = 隐藏）~~ | ✅ 2026-08-27 已实现：tray-icon 核心 + CheckMenuItem + settings.json 持久化。 真机验证：勾选 `minimize_to_tray` 后 WM_CLOSE 触发 prevent_close + hide，进程不退出；取消勾选后 WM_CLOSE 正常退出 |
 | ~~🟡 中~~ | ~~窗口状态记忆（`tauri-plugin-window-state`）~~ | ✅ 2026-08-27 已实现并真机验证：第二次 dev 启动位置 `(589,119) 1000x600` ≠ tauri.conf.json 中心默认值，确认从 `%APPDATA%\com.deepseek.dsh-desktop-lite\.window-state.json` 恢复 |
-| 🟡 中 | 自定义图标 | 替换 `src-tauri/icons/`，用 Tauri 推荐的 icns/ico |
+| ~~🟡 中~~ | ~~自定义图标~~ | ✅ 2026-08-27 已用 DSH 鲸鱼 logo 替换。源 SVG `src-tauri/icon-source/dsh-logo.svg`（取自 DSH 安装包 favicon），用 `pnpm tauri icon <svg>` 生成全套 19 个图标（Windows/Linux/macOS/Android/iOS）。`tauri.conf.json` `bundle.icon` 数组加入 `64x64.png` 和 `icon.png` 覆盖 Tauri 2 bundle 默认 |
 | 🟡 中 | 日志持久化 | dsh 子进程日志写到 `%APPDATA%\dsh-desktop-lite\logs\` |
 | ~~🟢 中~~ | ~~启动失败时显示 dsh 真实错误~~ | ✅ 2026-08-27 已实现：结构化 `DshError { message, last_stderr }`，错误页底部贴最近 30 行 stderr；wait 线程同时检测 dsh 提前退出 |
 | ~~🟡 中~~ | ~~验证关闭 Tauri 窗口时 dsh 子进程被 `RunEvent::WindowEvent::CloseRequested` 钩子 kill~~ | ✅ 2026-08-27 已用 Win32 PostMessage WM_CLOSE 真机验证：dsh 子进程（监听 57376 的 node + dsh.cmd shim）被 kill，端口不再监听 |
