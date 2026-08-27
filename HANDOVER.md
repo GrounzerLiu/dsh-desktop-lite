@@ -237,7 +237,9 @@ pnpm tauri dev
 | 🟢 高 | `pnpm tauri build` 产出 msi/nsis | 验证打包链 |
 | 🟡 中 | 窗口状态记忆（`tauri-plugin-window-state`） | 关闭后下次记住大小位置 |
 | 🟡 中 | 系统托盘 | 关闭窗口 ≠ 退出进程，可从托盘恢复 |
-| 🟡 中 | 单实例锁（`tauri-plugin-single-instance`） | 避免重复启动 dsh |
+| ~~🟡 中~~ | ~~单实例锁（`tauri-plugin-single-instance`）~~ | ✅ 2026-08-27 已实现并真机验证：起第二个 cargo run 后 3 秒内只剩第一个进程（PID 52728），第二个被 mutex 杀 |
+| ~~🟡 中~~ | ~~系统托盘（关闭 = 隐藏）~~ | ✅ 2026-08-27 已实现：tray-icon 核心 + CheckMenuItem + settings.json 持久化。 真机验证：勾选 `minimize_to_tray` 后 WM_CLOSE 触发 prevent_close + hide，进程不退出；取消勾选后 WM_CLOSE 正常退出 |
+| ~~🟡 中~~ | ~~窗口状态记忆（`tauri-plugin-window-state`）~~ | ✅ 2026-08-27 已实现并真机验证：第二次 dev 启动位置 `(589,119) 1000x600` ≠ tauri.conf.json 中心默认值，确认从 `%APPDATA%\com.deepseek.dsh-desktop-lite\.window-state.json` 恢复 |
 | 🟡 中 | 自定义图标 | 替换 `src-tauri/icons/`，用 Tauri 推荐的 icns/ico |
 | 🟡 中 | 日志持久化 | dsh 子进程日志写到 `%APPDATA%\dsh-desktop-lite\logs\` |
 | ~~🟢 中~~ | ~~启动失败时显示 dsh 真实错误~~ | ✅ 2026-08-27 已实现：结构化 `DshError { message, last_stderr }`，错误页底部贴最近 30 行 stderr；wait 线程同时检测 dsh 提前退出 |
