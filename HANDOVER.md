@@ -234,7 +234,7 @@ pnpm tauri dev
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
 | ~~🟢 高~~ | ~~首次 `pnpm tauri dev` 跑通~~ | ✅ 2026-08-27 已完成，修了 url regex bug |
-| ~~🟢 高~~ | ~~`pnpm tauri build` 产出 msi/nsis~~ | ✅ 2026-08-27 首次 `pnpm tauri build` 成功（~3 分钟）。产物：<br>• `src-tauri\target\release\dsh-desktop-lite.exe` (10.6 MB, 裸 release exe)<br>• `bundle\msi\DSH Desktop Lite_0.1.0_x64_en-US.msi` (3.5 MB, MSI magic 头 `D0CF11E0A1B11AE1` 验证为真)<br>• `bundle\nsis\DSH Desktop Lite_0.1.0_x64-setup.exe` (2.3 MB, NSIS 安装器)<br>Tauri 自动下载并缓存了 WiX 3.14.1 + NSIS 3.11 + nsis-tauri-utils 0.5.3。**未实际运行安装器**（避免污染系统注册表）— 验证仅到文件存在 + magic bytes 正确。 |
+| ~~🟢 高~~ | ~~`pnpm tauri build` 产出 msi/nsis~~ | ✅ 2026-08-27 首次 `pnpm tauri build` 成功（~3 分钟首次 / 第二次 ~1.5 分钟）。产物：<br>• `src-tauri\target\release\dsh-desktop-lite.exe` (10.6 MB, 裸 release exe)<br>• `bundle\msi\DSH Desktop Lite_0.1.0_x64_en-US.msi` (3.5 MB, MSI magic 头 `D0CF11E0A1B11AE1` 验证为真)<br>• `bundle\nsis\DSH Desktop Lite_0.1.0_x64-setup.exe` (2.3 MB, NSIS 安装器)<br>Tauri 自动下载并缓存了 WiX 3.14.1 + NSIS 3.11 + nsis-tauri-utils 0.5.3。**未实际运行安装器**（避免污染系统注册表）— 验证仅到文件存在 + magic bytes 正确。 |
 | 🟡 中 | 窗口状态记忆（`tauri-plugin-window-state`） | 关闭后下次记住大小位置 |
 | 🟡 中 | 系统托盘 | 关闭窗口 ≠ 退出进程，可从托盘恢复 |
 | ~~🟡 中~~ | ~~单实例锁（`tauri-plugin-single-instance`）~~ | ✅ 2026-08-27 已实现并真机验证：起第二个 cargo run 后 3 秒内只剩第一个进程（PID 52728），第二个被 mutex 杀 |
@@ -242,6 +242,7 @@ pnpm tauri dev
 | ~~🟡 中~~ | ~~窗口状态记忆（`tauri-plugin-window-state`）~~ | ✅ 2026-08-27 已实现并真机验证：第二次 dev 启动位置 `(589,119) 1000x600` ≠ tauri.conf.json 中心默认值，确认从 `%APPDATA%\com.deepseek.dsh-desktop-lite\.window-state.json` 恢复 |
 | ~~🟡 中~~ | ~~自定义图标~~ | ✅ 2026-08-27 已用 DSH 鲸鱼 logo 替换。源 SVG `src-tauri/icon-source/dsh-logo.svg`（取自 DSH 安装包 favicon），用 `pnpm tauri icon <svg>` 生成全套 19 个图标（Windows/Linux/macOS/Android/iOS）。`tauri.conf.json` `bundle.icon` 数组加入 `64x64.png` 和 `icon.png` 覆盖 Tauri 2 bundle 默认 |
 | ~~🟢 中~~ | ~~托盘加"重启 DSH"~~ | ✅ 2026-08-27 已实现：托盘菜单第 3 项 `重启 DSH`，点击后 Rust 端 `dsh::restart` kill 旧 dsh + 跳回 boot page + 让新 main.ts 走正常 start_dsh。子代理 review 发现并修复 3 个 bug：stale dsh-ready race（wait 线程可能在 url 还没清空时 emit 死 URL）、stale dsh-error（重启中显示"dsh 已退出"）、prod boot URL bug（重启时 window.url 是 dsh 端口不是 tauri origin）。修复方案：`DshHandle.shutting_down` AtomicBool 协作式取消 wait 线程；`BOOT_URL` OnceCell 在 setup 早期缓存。 |
+| ~~🟡 中~~ | ~~启动 dsh 时弹空白 dsh 窗口~~ | ✅ 2026-08-27 已修复：检测 `dsh.cmd` shim 扩展名，提取 `node.exe` + `bin.js` 路径直接 spawn，绕开 Windows CreateProcess 对 .cmd 的 cmd.exe 包装层。这样 `creation_flags(CREATE_NO_WINDOW)` 才能真正生效。进程树验证：之前是 `cmd.exe /c dsh.cmd → conhost + node`，现在是 `node.exe bin.js` 直接。dsh 内部 cordis 插件（tavily-mcp、chrome-devtools-mcp 等）启的 npx → cmd shim 链我们管不了（dsh 自己的事）。 |
 | ~~🟡 中~~ | ~~日志持久化~~ | ✅ 2026-08-27 已实现：`src-tauri/src/logs.rs`（新文件）。每天一个文件 `<app_data_dir>/logs/dsh-YYYY-MM-DD.log`（UTC），append-only，启动时 prune 7 天前文件。每行 `sync_all()` 写入（保证 `Get-Content` 实时可见），stdout/stderr relay 通过 `Arc<Mutex<File>>` 共享同一文件。子代理 review SHIP IT。 |
 | ~~🟢 中~~ | ~~启动失败时显示 dsh 真实错误~~ | ✅ 2026-08-27 已实现：结构化 `DshError { message, last_stderr }`，错误页底部贴最近 30 行 stderr；wait 线程同时检测 dsh 提前退出 |
 | ~~🟡 中~~ | ~~验证关闭 Tauri 窗口时 dsh 子进程被 `RunEvent::WindowEvent::CloseRequested` 钩子 kill~~ | ✅ 2026-08-27 已用 Win32 PostMessage WM_CLOSE 真机验证：dsh 子进程（监听 57376 的 node + dsh.cmd shim）被 kill，端口不再监听 |
