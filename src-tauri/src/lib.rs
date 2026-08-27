@@ -10,6 +10,7 @@
 
 pub mod deps;
 pub mod dsh;
+pub mod logs;
 pub mod settings;
 
 use once_cell::sync::OnceCell;

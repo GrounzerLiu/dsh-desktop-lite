@@ -153,12 +153,21 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
         h.shutting_down.store(false, Ordering::Relaxed);
     }
 
+    // Prune logs older than the retention window (best-effort) and
+    // open today's log file. We pass an Option<Arc<Mutex<File>>> to
+    // the relays so they can keep streaming on IO error: if open
+    // fails, we just skip file logging for this spawn.
+    crate::logs::prune_old_logs(app);
+    let log_writer: Option<Arc<Mutex<std::fs::File>>> =
+        crate::logs::open_today_writer(app).map(|f| Arc::new(Mutex::new(f)));
+
     // Stream stdout/stderr on background threads; the stdout thread reports
     // the resolved URL back as soon as the boot banner appears. The stderr
     // thread also keeps a rolling tail so we can attach the last N lines
-    // to any `dsh-error` event.
-    spawn_stdout_relay(app.clone(), stdout);
-    spawn_stderr_relay(app.clone(), stderr);
+    // to any `dsh-error` event. Both threads also mirror each line to
+    // the on-disk log writer if one is available.
+    spawn_stdout_relay(app.clone(), stdout, log_writer.clone());
+    spawn_stderr_relay(app.clone(), stderr, log_writer.clone());
 
     // Wait (on a background thread) for the URL to be published, then
     // forward it to the frontend as a single "dsh-ready" event. If the
@@ -245,12 +254,23 @@ fn emit_dsh_error(app: &AppHandle, message: &str) {
     );
 }
 
-fn spawn_stdout_relay(app: AppHandle, stdout: ChildStdout) {
+fn spawn_stdout_relay(
+    app: AppHandle,
+    stdout: ChildStdout,
+    log_writer: Option<Arc<Mutex<std::fs::File>>>,
+) {
     let app2 = app.clone();
     let url_arc = handle().url.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
+            // Mirror to disk first so a write failure doesn't suppress
+            // the in-memory / event path; file logging is best-effort.
+            if let Some(w) = &log_writer {
+                if let Ok(mut g) = w.lock() {
+                    let _ = crate::logs::write_line(&mut g, "stdout", &line);
+                }
+            }
             // Surface every line to the UI as a log event.
             let _ = app2.emit(
                 "dsh-log",
@@ -268,11 +288,20 @@ fn spawn_stdout_relay(app: AppHandle, stdout: ChildStdout) {
     });
 }
 
-fn spawn_stderr_relay(app: AppHandle, stderr: ChildStderr) {
+fn spawn_stderr_relay(
+    app: AppHandle,
+    stderr: ChildStderr,
+    log_writer: Option<Arc<Mutex<std::fs::File>>>,
+) {
     let tail_arc = handle().stderr_tail.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
+            if let Some(w) = &log_writer {
+                if let Ok(mut g) = w.lock() {
+                    let _ = crate::logs::write_line(&mut g, "stderr", &line);
+                }
+            }
             // Push onto the rolling tail (newest at the back) for later
             // use by emit_dsh_error.
             {
