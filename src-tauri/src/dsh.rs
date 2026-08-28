@@ -16,7 +16,7 @@ use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// The "URL is ready" payload published to the frontend.
 #[derive(Debug, Serialize, Clone)]
@@ -159,6 +159,7 @@ fn resolve_dsh_program(dsh_path: &str) -> Result<DshProgram, String> {
 /// `--port 0` lets the OS pick a free port, sidestepping the 3080 default
 /// which may already be in use.
 pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String, String> {
+    crate::logs::log_app(app, "INFO", "dsh::spawn", &format!("spawn_and_wait_for_url dsh_path={}", dsh_path));
     // `dsh_path` may point at `dsh.cmd` (the npm-generated Windows
     // batch shim). Spawning that directly with Command::new makes
     // Windows CreateProcess launch a *parent* `cmd.exe /c "dsh.cmd"`
@@ -218,9 +219,13 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动 dsh 失败 ({}): {}", dsh_path, e))?;
+        .map_err(|e| {
+            crate::logs::log_app(app, "ERROR", "dsh::spawn", &format!("spawn failed: {}", e));
+            format!("启动 dsh 失败 ({}): {}", dsh_path, e)
+        })?;
 
     let pid = child.id();
+    crate::logs::log_app(app, "INFO", "dsh::spawn", &format!("child spawned pid={}", pid));
     let stdout = child
         .stdout
         .take()
@@ -281,6 +286,7 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 if shutting_down_arc.load(Ordering::Relaxed) {
                     return;
                 }
+                crate::logs::log_app(&app_for_wait, "INFO", "dsh::wait", &format!("dsh-ready url={}", url));
                 let _ = app_for_wait.emit("dsh-ready", DshReady { url });
                 return;
             }
@@ -316,7 +322,7 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 if !should_respawn {
                     return;
                 }
-                eprintln!("[dsh::wait] dsh died unexpectedly, auto-respawning");
+                crate::logs::log_app(&app_for_wait, "WARN", "dsh::wait", "dsh died unexpectedly, auto-respawning");
                 let _ = app_for_wait.emit("dsh-restarting", ());
                 if let Some(status) = HANDLE.get() {
                     status.url.lock().unwrap().take();
@@ -324,6 +330,7 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 let dsh_path = match crate::deps::find_dsh() {
                     Some(p) => p,
                     None => {
+                        crate::logs::log_app(&app_for_wait, "ERROR", "dsh::wait", "auto-respawn failed: dsh not found");
                         emit_dsh_error(
                             &app_for_wait,
                             "dsh 进程已退出，自动重启失败：未找到 dsh 命令。",
@@ -331,8 +338,9 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                         return;
                     }
                 };
+                crate::logs::log_app(&app_for_wait, "INFO", "dsh::wait", &format!("auto-respawn spawn {}", dsh_path));
                 if let Err(e) = spawn_and_wait_for_url(&app_for_wait, &dsh_path) {
-                    eprintln!("[dsh::wait] auto-respawn failed: {e}");
+                    crate::logs::log_app(&app_for_wait, "ERROR", "dsh::wait", &format!("auto-respawn failed: {e}"));
                     emit_dsh_error(
                         &app_for_wait,
                         &format!("dsh 进程已退出，自动重启失败：{e}"),
@@ -344,6 +352,7 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 if shutting_down_arc.load(Ordering::Relaxed) {
                     return;
                 }
+                crate::logs::log_app(&app_for_wait, "ERROR", "dsh::wait", "spawn timeout 60s");
                 emit_dsh_error(
                     &app_for_wait,
                     "等待 dsh 启动超时 (60s)。请检查依赖或查看日志。",
@@ -449,10 +458,15 @@ fn spawn_stderr_relay(
 /// failure (already exited, no handle stashed) is silently ignored because
 /// the OS will reap the process when this app exits anyway.
 pub fn shutdown() {
+    crate::logs::log_app_fallback("INFO", "dsh::shutdown", "shutdown called");
     if let Some(h) = HANDLE.get() {
         if let Some(mut child) = h.child.lock().unwrap().take() {
+            crate::logs::log_app_fallback("INFO", "dsh::shutdown", &format!("killing pid {}", child.id()));
             let _ = child.kill();
             let _ = child.wait();
+            crate::logs::log_app_fallback("INFO", "dsh::shutdown", "child reaped");
+        } else {
+            crate::logs::log_app_fallback("INFO", "dsh::shutdown", "no child to kill");
         }
     }
 }
@@ -483,6 +497,7 @@ pub fn force_kill_for_test() {
 /// would race it and we would end up with two dsh instances on different
 /// ports.
 pub fn restart(app: &AppHandle) -> Result<(), String> {
+    crate::logs::log_app(app, "INFO", "dsh::restart", "restart entered");
     // Order matters: flip `shutting_down` and clear the remembered URL
     // *before* killing the old child. The wait thread for the old dsh
     // polls every 100ms; if it observes the stale URL after the kill
@@ -497,30 +512,40 @@ pub fn restart(app: &AppHandle) -> Result<(), String> {
         h.stderr_tail.lock().unwrap().clear();
     }
 
-    // Tell the frontend to show a "restarting" overlay. Without this
-    // the user would stare at the dead DSH page for ~5s while the
-    // new dsh boots.
+    // Tell the frontend to show a "restarting" overlay (best-effort:
+    // if the WebView is currently on the old dsh URL our main.ts is
+    // not mounted, so nobody listens — harmless).
+    crate::logs::log_app(app, "INFO", "dsh::restart", "emit dsh-restarting");
     let _ = app.emit("dsh-restarting", ());
 
+    // Navigate the WebView back to the boot page so the user sees the
+    // loading screen while the new dsh boots, instead of a dead dsh
+    // page. The freshly-loaded main.ts will then run its normal boot
+    // flow (check_deps -> start_dsh) and spawn the new dsh; its
+    // dsh-ready event navigates us to the fresh URL.
+    if let Some(boot_url) = crate::BOOT_URL.get() {
+        crate::logs::log_app(app, "INFO", "dsh::restart", &format!("navigate to BOOT_URL={}", boot_url));
+        if let Some(window) = app.get_webview_window("main") {
+            let parsed = boot_url
+                .parse()
+                .expect("BOOT_URL is always a compile-time URL literal");
+            if let Err(e) = window.navigate(parsed) {
+                crate::logs::log_app(app, "ERROR", "dsh::restart", &format!("navigate to boot page failed: {e}"));
+            }
+        } else {
+            crate::logs::log_app(app, "ERROR", "dsh::restart", "main window missing, cannot navigate to boot page");
+        }
+    } else {
+        crate::logs::log_app(app, "WARN", "dsh::restart", "BOOT_URL not set, skipping navigate");
+    }
+
+    crate::logs::log_app(app, "INFO", "dsh::restart", "calling shutdown()");
     shutdown();
 
-    // Re-spawn a fresh dsh here, instead of relying on the WebView
-    // navigating to the boot page and main.ts calling start_dsh again.
-    // The latter is fragile: in dev mode the boot page is the Vite
-    // dev server (http://localhost:1420/) and if Vite has died,
-    // the navigate fails with ERR_CONNECTION_REFUSED and no reload
-    // happens — dsh never restarts. In production it relies on the
-    // user-installed app's bundled assets, but the same race is
-    // possible. Spawning here means the new dsh is up before we
-    // touch the WebView at all.
-    let status = crate::deps::check_all();
-    let dsh_path = status
-        .dsh
-        .ok_or_else(|| "未找到 dsh 命令".to_string())?;
-    if let Err(e) = spawn_and_wait_for_url(app, &dsh_path) {
-        eprintln!("[dsh::restart] failed to spawn new dsh: {e}");
-        return Err(e);
-    }
+    // Deliberately do NOT spawn a new dsh here. The boot page's
+    // main.ts will call start_dsh after reload and spawn the fresh
+    // dsh, so spawning here would create two dsh instances racing.
+    crate::logs::log_app(app, "INFO", "dsh::restart", "restart done (boot page reload will start dsh)");
     Ok(())
 }
 
