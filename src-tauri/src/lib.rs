@@ -176,6 +176,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            logs::init_app_log_flusher();
             logs::log_app(app.handle(), "INFO", "setup", "=== app setup start ===");
             // Load persisted preferences (currently just minimize-to-tray).
             let loaded = settings::load(app.handle())
@@ -388,6 +389,7 @@ pub fn run() {
             if let RunEvent::ExitRequested { .. } = &event {
                 logs::log_app(app_handle, "INFO", "run", "ExitRequested -> dsh::shutdown");
                 dsh::shutdown();
+                logs::flush_app_log();
             }
             if let RunEvent::WindowEvent {
                 label,
