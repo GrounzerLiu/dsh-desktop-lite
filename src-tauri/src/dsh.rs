@@ -298,10 +298,46 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 if shutting_down_arc.load(Ordering::Relaxed) {
                     return;
                 }
-                emit_dsh_error(
-                    &app_for_wait,
-                    "dsh 进程已退出，未打印启动 URL。",
-                );
+                // dsh died unexpectedly (e.g. crashed, or killed by
+                // the user via the WebView reload that re-fetched its
+                // URL while it was restarting). Auto-respawn it so the
+                // user isn't staring at a dead dsh page.
+                //
+                // Guard against false positives: only auto-respawn when
+                // the Child handle is still present in HANDLE (i.e. it
+                // died, not just that shutdown()/restart() took it out
+                // via Option::take). If HANDLE.child is None we know
+                // we're the "victim" of a concurrent restart and that
+                // path will respawn us itself.
+                let should_respawn = HANDLE
+                    .get()
+                    .map(|h| h.child.lock().unwrap().is_some())
+                    .unwrap_or(false);
+                if !should_respawn {
+                    return;
+                }
+                eprintln!("[dsh::wait] dsh died unexpectedly, auto-respawning");
+                let _ = app_for_wait.emit("dsh-restarting", ());
+                if let Some(status) = HANDLE.get() {
+                    status.url.lock().unwrap().take();
+                }
+                let dsh_path = match crate::deps::find_dsh() {
+                    Some(p) => p,
+                    None => {
+                        emit_dsh_error(
+                            &app_for_wait,
+                            "dsh 进程已退出，自动重启失败：未找到 dsh 命令。",
+                        );
+                        return;
+                    }
+                };
+                if let Err(e) = spawn_and_wait_for_url(&app_for_wait, &dsh_path) {
+                    eprintln!("[dsh::wait] auto-respawn failed: {e}");
+                    emit_dsh_error(
+                        &app_for_wait,
+                        &format!("dsh 进程已退出，自动重启失败：{e}"),
+                    );
+                }
                 return;
             }
             if std::time::Instant::now() >= deadline {
@@ -417,6 +453,21 @@ pub fn shutdown() {
         if let Some(mut child) = h.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+/// Test/diagnostic helper: forcibly kill the dsh child without going
+/// through `shutdown()`. Lets the wait thread observe the death as
+/// "unexpected" so we can exercise the auto-respawn path. We `kill()`
+/// but DON'T `take()` so HANDLE.child is still `Some(child)` and the
+/// wait thread's "child still present ⇒ genuine crash" guard fires
+/// correctly. Not wired to any user-facing action.
+#[doc(hidden)]
+pub fn force_kill_for_test() {
+    if let Some(h) = HANDLE.get() {
+        if let Some(child) = h.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
         }
     }
 }

@@ -157,21 +157,27 @@ pub fn run() {
             // BEFORE the WebView has had a chance to navigate to a dsh
             // URL. `restart()` later reads this so it can navigate the
             // WebView back here regardless of where it currently points.
-            // We prefer config.build.dev_url (Vite in dev), and fall
-            // back to the main window's initial URL (which in a bundled
-            // build is tauri://localhost/ pointing at index.html).
+            //
+            // We deliberately do NOT use config.build.dev_url
+            // (http://localhost:1420/ in dev) here: the dev server can
+            // die or be unavailable, and navigating to it during a
+            // restart would surface ERR_CONNECTION_REFUSED to the user.
+            // Instead we always point at the tauri:// origin which:
+            //   * in production, serves the bundled frontendDist assets
+            //   * in dev, is intercepted by tauri-dev and serves the
+            //     same Vite-served assets over the tauri:// scheme
+            //     (no separate HTTP connection to 1420 needed)
+            // This makes the boot URL robust regardless of Vite state.
             let boot_url = {
-                let build = &app.config().build;
-                if let Some(url) = &build.dev_url {
-                    url.to_string()
-                } else if let Some(window) = app.get_webview_window("main") {
-                    if let Ok(u) = window.url() {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Ok(mut u) = window.url() {
+                        u.set_path("/");
                         u.to_string()
                     } else {
-                        return Err("无法获取主窗口初始 URL".into());
+                        "tauri://localhost/".to_string()
                     }
                 } else {
-                    return Err("主窗口不存在".into());
+                    "tauri://localhost/".to_string()
                 }
             };
             let _ = BOOT_URL.set(boot_url);
