@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
@@ -66,7 +66,16 @@ struct DshHandle {
     /// be killed. Reset back to false by `spawn_and_wait_for_url` so a
     /// fresh wait thread can do its job for the new dsh.
     shutting_down: Arc<AtomicBool>,
+    /// Consecutive unexpected-death auto-respawns for the current dsh
+    /// instance. Reset to 0 every time dsh prints its URL (successful
+    /// boot). When it exceeds `MAX_AUTO_RESPAWNS` we stop retrying and
+    /// surface an error instead of looping forever (e.g. a misconfigured
+    /// dsh plugin that crashes on every boot).
+    respawn_count: Arc<AtomicU32>,
 }
+
+/// How many consecutive auto-respawns to attempt before giving up.
+const MAX_AUTO_RESPAWNS: u32 = 3;
 
 impl DshHandle {
     fn new() -> Self {
@@ -75,6 +84,7 @@ impl DshHandle {
             url: Arc::new(Mutex::new(None)),
             stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP))),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            respawn_count: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -287,6 +297,11 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                     return;
                 }
                 crate::logs::log_app(&app_for_wait, "INFO", "dsh::wait", &format!("dsh-ready url={}", url));
+                // Successful boot: reset the auto-respawn counter so a
+                // later crash still gets a fresh set of retries.
+                if let Some(h) = HANDLE.get() {
+                    h.respawn_count.store(0, Ordering::Relaxed);
+                }
                 let _ = app_for_wait.emit("dsh-ready", DshReady { url });
                 return;
             }
@@ -322,7 +337,25 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
                 if !should_respawn {
                     return;
                 }
-                crate::logs::log_app(&app_for_wait, "WARN", "dsh::wait", "dsh died unexpectedly, auto-respawning");
+                // Bounded retry: if dsh keeps dying immediately (e.g. a
+                // plugin config error that crashes on every boot), stop
+                // auto-respawning after MAX_AUTO_RESPAWNS and show the
+                // user an actionable error instead of looping forever.
+                let attempts = HANDLE
+                    .get()
+                    .map(|h| h.respawn_count.fetch_add(1, Ordering::Relaxed) + 1)
+                    .unwrap_or(1);
+                crate::logs::log_app(&app_for_wait, "WARN", "dsh::wait", &format!("dsh died unexpectedly (attempt {attempts}), auto-respawning"));
+                if attempts > MAX_AUTO_RESPAWNS {
+                    crate::logs::log_app(&app_for_wait, "ERROR", "dsh::wait", &format!("auto-respawn limit reached ({MAX_AUTO_RESPAWNS}), giving up"));
+                    emit_dsh_error(
+                        &app_for_wait,
+                        &format!(
+                            "dsh 反复启动失败（已自动重试 {MAX_AUTO_RESPAWNS} 次）。\n请检查最近安装的插件/配置，或查看日志目录下的 dsh-*.log。"
+                        ),
+                    );
+                    return;
+                }
                 let _ = app_for_wait.emit("dsh-restarting", ());
                 if let Some(status) = HANDLE.get() {
                     status.url.lock().unwrap().take();
@@ -510,6 +543,7 @@ pub fn restart(app: &AppHandle) -> Result<(), String> {
         h.shutting_down.store(true, Ordering::Relaxed);
         h.url.lock().unwrap().take();
         h.stderr_tail.lock().unwrap().clear();
+        h.respawn_count.store(0, Ordering::Relaxed);
     }
 
     // Tell the frontend to show a "restarting" overlay (best-effort:
