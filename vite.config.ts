@@ -27,4 +27,13 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    rollupOptions: {
+      // Multi-page: the boot screen plus the plugin management window.
+      input: {
+        main: "index.html",
+        plugins: "plugins.html",
+      },
+    },
+  },
 }));

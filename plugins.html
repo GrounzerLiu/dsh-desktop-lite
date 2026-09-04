@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/plugins.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH 插件管理</title>
+    <script type="module" src="/src/plugins.ts" defer></script>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <h1>DSH 插件管理</h1>
+        <p class="hint">切换后需<b>重启 DSH</b> 才生效；配置文件已自动备份（cordis.patch.yml.bak-plugin-panel）。</p>
+      </header>
+
+      <div id="status" class="status hidden"></div>
+
+      <section class="toolbar">
+        <button id="refresh" type="button">刷新</button>
+        <button id="restart" type="button" class="primary">重启 DSH（使变更生效）</button>
+      </section>
+
+      <section id="plugin-list" class="plugin-list"></section>
+
+      <footer class="footer">
+        <span>自动扫描 <code>~/.dsh/profiles/web</code> 中的第三方插件（内置核心层不显示）。</span>
+      </footer>
+    </main>
+  </body>
+</html>

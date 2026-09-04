@@ -11,6 +11,7 @@
 pub mod deps;
 pub mod dsh;
 pub mod logs;
+pub mod plugins;
 pub mod settings;
 
 use once_cell::sync::OnceCell;
@@ -46,6 +47,7 @@ const SHOW_ID: &str = "show";
 const HIDE_ID: &str = "hide";
 const RESTART_ID: &str = "restart";
 const QUIT_ID: &str = "quit";
+const PLUGINS_ID: &str = "plugins_panel";
 
 /// Dependency check: where are node and dsh?
 #[tauri::command]
@@ -145,6 +147,59 @@ fn get_minimize_to_tray() -> bool {
     MINIMIZE_TO_TRAY.load(Ordering::Relaxed)
 }
 
+/// List every third-party plugin entry (id + bundle + enabled state) for
+/// the plugin management window. Reads the DSH web profile's
+/// `package.json` bundles and each bundle's patch file; the enabled flag
+/// reflects `disabled: true` overrides in `cordis.patch.yml`.
+#[tauri::command]
+fn list_plugins(app: tauri::AppHandle) -> Result<Vec<plugins::PluginEntry>, String> {
+    let r = plugins::list_plugins();
+    logs::log_app(
+        &app,
+        "INFO",
+        "plugins::list",
+        &format!("list_plugins ok={} count={}", r.is_ok(), r.as_ref().map(|v| v.len()).unwrap_or(0)),
+    );
+    r
+}
+
+/// Toggle a plugin entry in the DSH web profile's `cordis.patch.yml`.
+/// Does NOT restart dsh — the change takes effect on the next dsh boot
+/// (the panel offers a manual "restart DSH" button for that).
+#[tauri::command]
+fn set_plugin(app: tauri::AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    let r = plugins::set_plugin(&id, enabled);
+    logs::log_app(
+        &app,
+        "INFO",
+        "plugins::set",
+        &format!("set_plugin id={} enabled={} ok={}", id, enabled, r.is_ok()),
+    );
+    r
+}
+
+/// Open (or focus) the plugin management window. Created on demand with a
+/// runtime builder so the window only exists while the user is managing
+/// plugins; the main window and dsh are untouched.
+fn open_plugins_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("plugins") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return;
+    }
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let builder = WebviewWindowBuilder::new(app, "plugins", WebviewUrl::App("plugins.html".into()))
+        .title("DSH 插件管理")
+        .inner_size(760.0, 640.0)
+        .min_inner_size(520.0, 400.0)
+        .resizable(true);
+    match builder.build() {
+        Ok(_) => logs::log_app(app, "INFO", "plugins", "plugins window opened"),
+        Err(e) => logs::log_app(app, "ERROR", "plugins", &format!("open plugins window failed: {e}")),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -239,6 +294,8 @@ pub fn run() {
             )?;
             let open_logs_item =
                 MenuItem::with_id(app, "open_logs", "打开日志目录", true, None::<&str>)?;
+            let plugins_item =
+                MenuItem::with_id(app, PLUGINS_ID, "插件管理…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, QUIT_ID, "退出", true, None::<&str>)?;
             let sep = tauri::menu::PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
@@ -249,6 +306,7 @@ pub fn run() {
                     &restart_item,
                     &min_tray_item,
                     &open_logs_item,
+                    &plugins_item,
                     &sep,
                     &quit_item,
                 ],
@@ -312,6 +370,10 @@ pub fn run() {
                                 .arg(dir)
                                 .spawn();
                         }
+                    }
+                    PLUGINS_ID => {
+                        logs::log_app(app, "INFO", "tray", "menu: plugins_panel");
+                        open_plugins_window(app);
                     }
                     _ => {}
                 })
@@ -379,6 +441,8 @@ pub fn run() {
             dsh_status,
             navigate_to,
             get_minimize_to_tray,
+            list_plugins,
+            set_plugin,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,0 +1,202 @@
+/* Plugin management window — dark theme matching the boot screen. */
+
+:root {
+  --bg: #0f1419;
+  --panel: #1a212b;
+  --border: #2a3542;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #4f8cff;
+  --danger: #f85149;
+  --ok: #3fb950;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.panel {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 18px 20px 24px;
+}
+
+.header h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hint b {
+  color: var(--accent);
+}
+
+.status {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.status.ok {
+  background: rgba(63, 185, 80, 0.12);
+  color: var(--ok);
+  border: 1px solid rgba(63, 185, 80, 0.35);
+}
+
+.status.err {
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
+.hidden {
+  display: none;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.toolbar button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toolbar button:hover {
+  border-color: var(--accent);
+}
+
+.toolbar button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 28px 0;
+}
+
+.plugin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.plugin-row .meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-row .pid {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.plugin-row .bundle {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.plugin-row .state {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.plugin-row .state.on {
+  color: var(--ok);
+}
+
+.plugin-row .state.off {
+  color: var(--danger);
+}
+
+/* Toggle switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex: none;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  background: #333d4a;
+  border-radius: 22px;
+  transition: 0.2s;
+  cursor: pointer;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.2s;
+}
+
+.switch input:checked + .slider {
+  background: var(--accent);
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(18px);
+}
+
+.footer {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.footer code {
+  background: var(--panel);
+  padding: 1px 5px;
+  border-radius: 4px;
+}

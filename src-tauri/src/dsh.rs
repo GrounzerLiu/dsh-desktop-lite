@@ -52,6 +52,24 @@ pub struct DshStatus {
 /// the payload stays small and the VecDeque doesn't grow forever.
 const STDERR_TAIL_CAP: usize = 30;
 
+/// Locate the user's dsh web profile directory (the folder containing
+/// their plugin `package.json`): `$HOME/.dsh/profiles/web`. We spawn
+/// dsh with this as cwd because dsh resolves plugins and the frontend
+/// client-bundle list partly relative to the working directory —
+/// spawning from the Tauri app's install dir instead breaks asset
+/// resolution ("Failed to load plugins" in the WebView).
+fn dsh_profile_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)?;
+    let dir = home.join(".dsh").join("profiles").join("web");
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
 /// Global child-process handle. `OnceCell` gives us a one-shot slot for the
 /// single dsh process this app supervises; the inner `Mutex` lets us
 /// interrogate the child (or kill it) from the Tauri command thread.
@@ -221,9 +239,15 @@ pub fn spawn_and_wait_for_url(app: &AppHandle, dsh_path: &str) -> Result<String,
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    // Inherit the user's working directory so DSH sees their $DSH_HOME, env,
-    // and the project they were last in.
-    if let Ok(cwd) = std::env::current_dir() {
+    // Run dsh from the user's profile dir (where their plugin
+    // package.json lives) if we can find it — this matches a user
+    // typing `dsh web` in that folder. dsh resolves plugins and the
+    // client-bundle list partly relative to cwd, so spawning from the
+    // Tauri app's install dir breaks client assets (Failed to load
+    // plugins from the WebView). Fall back to current_dir otherwise.
+    if let Some(dir) = dsh_profile_dir() {
+        cmd.current_dir(dir);
+    } else if let Ok(cwd) = std::env::current_dir() {
         cmd.current_dir(cwd);
     }
 
