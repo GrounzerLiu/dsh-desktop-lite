@@ -5,6 +5,7 @@
   "windows": ["main", "plugins"],
   "permissions": [
     "core:default",
+    "core:webview:allow-clear-all-browsing-data",
     "opener:default"
   ]
 }

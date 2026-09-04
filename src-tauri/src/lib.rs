@@ -112,6 +112,11 @@ fn dsh_status() -> dsh::DshStatus {
 /// Navigate the main webview to a URL. The frontend cannot do this directly
 /// in Tauri 2, so we expose it as a command. We refuse anything that is not
 /// http(s); the DSH server always serves on `http://127.0.0.1:<port>`.
+///
+/// Between the BOOT_URL and a DSH URL we clear 127.0.0.1 storage in the
+/// WebView partition. Otherwise stale localStorage/cookies from a previous
+/// port or profile can bloat request headers past Node's maxHeaderSize and
+/// produce `HTTP 431 Request Header Fields Too Large` on the next navigate.
 #[tauri::command]
 fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     logs::log_app(&app, "INFO", "lib::navigate_to", &format!("navigate_to url={}", url));
@@ -125,6 +130,19 @@ fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
             logs::log_app(&app, "ERROR", "lib::navigate_to", "main window missing");
             "main window missing".to_string()
         })?;
+    // DSH 431 guard: stale cookies/localStorage from a previous
+    // 127.0.0.1:port can bloat request headers past Node's
+    // maxHeaderSize. Clear WebView storage on the underlying partition
+    // (EBWebView) before navigating to a new DSH origin.
+    // Best-effort – if the API is unavailable or fails, continue with
+    // the navigate and fall back to eval.
+    if url.starts_with("http://127.0.0.1") {
+        let r = win.clear_all_browsing_data();
+        logs::log_app(&app, "INFO", "lib::navigate_to", &format!("clear_all_browsing_data -> {:?}", r));
+        if r.is_err() {
+            let _ = win.eval("try{localStorage.clear();sessionStorage.clear();}catch(e){}");
+        }
+    }
     let parsed = url.parse().map_err(|e| {
         logs::log_app(&app, "ERROR", "lib::navigate_to", &format!("bad url parse: {e}"));
         format!("bad url: {e}")
